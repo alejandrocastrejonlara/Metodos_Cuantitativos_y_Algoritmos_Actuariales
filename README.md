@@ -29,3 +29,10 @@ Aceptación-Rechazo en Densidades por Partes (aceptacion_rechazo_triangular.Rmd)
 Análisis de Valor en Riesgo (VaR) y Optimización de Portafolios: Script en R (`VaR_Optimizacion_Moderado.Rmd`) que extrae datos históricos del mercado mediante API y calcula el VaR y el Expected Shortfall (ES) al 99% y 97.5%. Implementa cuatro enfoques normativos: Simulación Histórica, Simulación Monte Carlo (100,000 escenarios), Modelo Paramétrico Delta-Normal y Volatilidad Dinámica (EWMA). Incluye el modelado matricial para la Optimización de Markowitz (frontera eficiente y ratio de Sharpe).
 
 Modelo Estructural de Riesgo de Crédito (Merton): Herramienta desarrollada en Excel (`Modelo_Estructural_Merton_Rediseno.xlsx`) para estimar la probabilidad de incumplimiento corporativo (PD) aplicando el marco de opciones financieras de Black-Scholes-Merton sobre la estructura de capital de una empresa.
+
+
+
+Contrastes de Hipótesis para Proporciones: Notebook (`Prueba_Wald_Proporciones.ipynb`) que evalúa hipótesis poblacionales utilizando la Prueba de Wald y la aproximación normal (Regla de los Cinco). Incluye la resolución algorítmica de problemas clásicos, como el experimento genético de hibridación de Mendel mediante `scipy.stats`.
+
+
+Impacto de Redes Sociales: Notebook (`EDA_Redes_Sociales.ipynb`) enfocado en la manipulación de DataFrames y la detección de patrones multivariados. Utiliza diagramas de dispersión y mapas de calor (`seaborn`, `matplotlib`) para encontrar relaciones no lineales y valores atípicos en métricas de salud mental, estrés y rendimiento académico.
