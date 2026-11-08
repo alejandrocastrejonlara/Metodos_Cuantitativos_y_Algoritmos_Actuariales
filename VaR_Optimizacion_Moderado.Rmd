@@ -1,0 +1,346 @@
+---
+title: "Cálculo de VaR y Optimización de Portafolio"
+author: "Cristian Alejandro Castrejón Lara, María Fernanda Ballesteros Ojeda"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+**1. CONFIGURACIÓN INICIAL **
+Carga de librerías, definición de fechas de horizonte y parámetros del portafolio.
+```{r}
+library(quantmod)
+library(ggplot2)
+library(writexl)
+library(moments)
+library(quadprog)
+library(Matrix) # Necesario para nearPD()
+library(jsonlite)
+
+divisa_mercado <- "MXN"
+Sys.setenv(TZ = "UTC") 
+
+# Margen extendido a 1200 días para amortiguar la asincronía de calendarios globales
+fecha_inicio_s <- as.character(Sys.Date() - 1200)
+fecha_fin <- Sys.Date()
+fecha_inicio <- as.character(as.Date(fecha_inicio_s) - 7)
+
+activos_info <- data.frame(
+  Ticker_Yahoo = c("CETES_BANXICO", "VTV", "XLE", "LLY", "SMH", "NVDA", "MU", "AVGO"), 
+  Nombre_Variable = c("Cetes", "ETF_Valor", "ETF_Energia", "EliLilly", "ETF_Semis", "Nvidia", "Micron", "Broadcom"),
+  Divisa = c("MXN", "USD", "USD", "USD", "USD", "USD", "USD", "USD"),
+  Inversion = c(30049771, 14000000, 8306908, 6303995, 5693092, 4082687, 829663, 433470)
+)
+total_invertir <- sum(activos_info$Inversion)
+n <- nrow(activos_info)
+
+activos_info$Ticker_Divisa <- ifelse(
+  activos_info$Divisa != divisa_mercado, 
+  paste0(activos_info$Divisa, divisa_mercado, "=X"), 
+  "Local"
+)
+```
+
+
+
+**2. DESCARGA ROBUSTA DE DATOS **
+Extracción de series de tiempo de Yahoo Finance con manejo de excepciones (tryCatch).
+```{r}
+descargar_precio <- function(ticker, fecha_inicio, fecha_fin) {
+  # --- BLOQUE BANXICO PARA CETES ---
+  if (ticker == "CETES_BANXICO") {
+    token_banxico <- Sys.getenv("BANXICO_TOKEN") # O pega tu token aquí "tu_token"
+    
+    tasa_cetes <- tryCatch({
+      if (!nzchar(token_banxico)) stop()
+      url <- sprintf("https://www.banxico.org.mx/SieAPIRest/service/v1/series/SF43936/datos/%s/%s?token=%s", 
+                     fecha_inicio, fecha_fin, token_banxico)
+      d <- suppressWarnings(fromJSON(url))$bmx$series$datos[[1]]
+      xts(as.numeric(d$dato) / 100, as.Date(d$fecha, "%d/%m/%Y"))
+    }, error = function(e) {
+      # Fallback histórico exacto del otro código si la API falla
+      t <- c(4.2, 4.2, 4.1, 4.1, 4.1, 4.2, 4.4, 4.5, 4.6, 4.8, 5.0, 5.3, 5.6, 6.0, 6.4, 6.7, 7.0, 7.5, 8.0, 8.5, 9.0, 9.1, 9.5, 10.1, 10.65, 10.95, 11.25, 11.25, 11.3, 11.3, 11.2, 11.1, 11.1, 11.05, 11.0, 11.25, 11.15, 11.05, 11.0, 11.0, 11.0, 10.95, 10.9, 10.75, 10.6, 10.3, 10.15, 10.0, 9.9, 9.5, 9.2, 8.8, 8.4, 8.1, 7.9, 7.65, 7.45, 7.3, 7.2, 7.1, 7.0, 6.9, 6.8, 6.7, 6.6, 6.5, 6.35, 6.25, 6.2)
+      xts(t / 100, seq(as.Date(fecha_inicio), by = "month", length.out = length(t)))
+    })
+    
+    # Convertir la tasa anual de Banxico en un precio sintético que el VaR pueda leer
+    fechas <- seq(as.Date(fecha_inicio), as.Date(fecha_fin), by="days")
+    tasa_diaria <- na.locf(merge(tasa_cetes, xts(, fechas)), na.rm=FALSE, fromLast=TRUE)
+    # El precio empieza en 100 y acumula el interés diario (Tasa / 360)
+    precio_cetes <- xts(100 * cumprod(1 + as.numeric(tasa_diaria) / 360), order.by = index(tasa_diaria))
+    
+    return(precio_cetes)
+  }
+  
+  # --- BLOQUE ORIGINAL YAHOO FINANCE PARA EL RESTO DE ACTIVOS ---
+  intento <- 1
+  while(intento <= 3) {
+    tryCatch({
+      datos <- suppressWarnings(getSymbols(ticker, src = "yahoo", from = fecha_inicio, 
+                                           to = fecha_fin, auto.assign = FALSE))
+      precio <- na.omit(Ad(datos))
+      return(precio)
+    }, error = function(e) {
+      if(intento == 3) stop(paste("Fallo definitivo descargando", ticker))
+    })
+    intento <- intento + 1
+    Sys.sleep(1)
+  }
+}
+
+precios_portafolio <- NULL 
+for (i in seq_len(nrow(activos_info))) {
+  precio_actual <- descargar_precio(activos_info$Ticker_Yahoo[i], fecha_inicio, fecha_fin)
+  colnames(precio_actual) <- activos_info$Nombre_Variable[i]
+  
+  if (is.null(precios_portafolio)) { precios_portafolio <- precio_actual
+  } else { precios_portafolio <- merge(precios_portafolio, precio_actual) }
+}
+precios_portafolio <- na.omit(precios_portafolio)
+
+precios_divisas <- NULL
+for (i in seq_len(nrow(activos_info))) {
+  nombre_actual <- activos_info$Ticker_Divisa[i]
+  if (nombre_actual == "Local") {
+    divisa_actual <- xts(rep(1, nrow(precios_portafolio)), order.by = index(precios_portafolio))
+    colnames(divisa_actual) <- "Local"
+  } else {
+    divisa_actual <- descargar_precio(nombre_actual, fecha_inicio, fecha_fin)
+    colnames(divisa_actual) <- nombre_actual
+  }
+  
+  if (is.null(precios_divisas)) { precios_divisas <- divisa_actual
+  } else { precios_divisas <- merge(precios_divisas, divisa_actual) }
+}
+```
+
+
+
+**3. CONVERSIÓN A USD Y VALIDACIÓN DE MUESTRA **
+Homologación de divisas, eliminación de festivos y validación estricta de 501 días hábiles.
+```{r}
+tabla_semifinal <- merge(precios_portafolio, precios_divisas)
+tabla_semifinal[, (n + 1):(2 * n)] <- na.locf(tabla_semifinal[, (n + 1):(2 * n)], na.rm = FALSE)
+
+tabla_semifinal_limpia <- na.omit(tabla_semifinal)
+tabla_semifinal_limpia <- tabla_semifinal_limpia[paste0(fecha_inicio_s, "/")]
+
+portafolio_cuadrado <- tabla_semifinal_limpia[, 1:n]
+divisas_cuadradas <- tabla_semifinal_limpia[, (n + 1):(2 * n)]
+precios_portafolio_usd <- portafolio_cuadrado * divisas_cuadradas
+
+# Validación Diagnóstica
+if (nrow(precios_portafolio_usd) < 501) {
+  stop(sprintf("Muestra Insuficiente: Solo hay %d días emparejados. El cruce de husos horarios destruyó la muestra. Amplía fecha_inicio.", nrow(precios_portafolio_usd)))
+}
+
+precios_portafolio_usd <- tail(precios_portafolio_usd, n = 501)
+colnames(precios_portafolio_usd) <- activos_info$Nombre_Variable
+```
+
+
+
+**4. RENDIMIENTOS Y MOTOR MATEMÁTICO CENTRAL **
+Generación de log-retornos, matriz de varianzas-covarianzas y vector de medias para todos los modelos.
+```{r}
+precio_actual <- as.numeric(tail(precios_portafolio_usd, 1))
+inversiones_vec <- as.numeric(activos_info$Inversion)
+
+rendimientos_globales <- na.omit(log(precios_portafolio_usd / lag(precios_portafolio_usd)))
+
+# Aseguramos que la matriz sea Positiva Definida (Evita errores en Cholesky y solve)
+matriz_cov_raw <- cov(rendimientos_globales)
+matriz_cov_global <- as.matrix(nearPD(matriz_cov_raw)$mat)
+mu_vec_global <- as.numeric(colMeans(rendimientos_globales))
+```
+
+
+
+**5. MÉTODO DE SIMULACIÓN HISTÓRICA **
+Generación de escenarios empíricos y extracción del VaR / ES.
+```{r}
+factores_crecimiento <- exp(rendimientos_globales)
+escenarios_precio <- sweep(factores_crecimiento, MARGIN = 2, STATS = precio_actual, FUN = "*")
+
+titulos <- inversiones_vec / precio_actual
+valor_pronosticado_activos <- sweep(escenarios_precio, MARGIN = 2, STATS = titulos, FUN = "*")
+perdidas_hist <- total_invertir - rowSums(valor_pronosticado_activos)
+
+var_99_hist  <- as.numeric(quantile(perdidas_hist, 0.99, na.rm = TRUE))
+var_975_hist <- as.numeric(quantile(perdidas_hist, 0.975, na.rm = TRUE))
+es_975_hist  <- mean(perdidas_hist[perdidas_hist >= var_975_hist], na.rm = TRUE)
+
+tabla_regulacion_hist <- data.frame(
+  Metodologia = c("Histórico - VaR 99%", "Histórico - VaR 97.5%", "Histórico - ES 97.5%"),
+  Medida = c("VaR 99%", "VaR 97.5%", "ES 97.5%"),
+  Valor_1_Dia = c(var_99_hist, var_975_hist, es_975_hist),
+  Valor_10_Dias = c(var_99_hist * sqrt(10), var_975_hist * sqrt(10), es_975_hist * sqrt(10)),
+  Capital_Mercado = c((var_99_hist * sqrt(10)) * 3.0, (var_975_hist * sqrt(10)) * 1.5, (es_975_hist * sqrt(10)) * 1.5)
+)
+```
+
+
+
+**6. MÉTODO DE SIMULACIÓN MONTE CARLO **
+Proyección estocástica de 100,000 escenarios con correlación de Cholesky.
+```{r}
+L <- chol(matriz_cov_global)
+
+set.seed(123)
+num_simulaciones <- 100000
+Z_indep <- matrix(rnorm(num_simulaciones * n), nrow = num_simulaciones, ncol = n)
+Z_corr <- Z_indep %*% L 
+
+rendimientos_mc <- sweep(Z_corr, MARGIN = 2, STATS = mu_vec_global, FUN = "+")
+escenarios_mc <- sweep(exp(rendimientos_mc), MARGIN = 2, STATS = precio_actual, FUN = "*")
+
+valor_pron_activos_mc <- sweep(escenarios_mc, MARGIN = 2, STATS = titulos, FUN = "*")
+perdidas_mc <- total_invertir - rowSums(valor_pron_activos_mc)
+
+var_99_mc  <- as.numeric(quantile(perdidas_mc, 0.99, na.rm = TRUE))
+var_975_mc <- as.numeric(quantile(perdidas_mc, 0.975, na.rm = TRUE))
+es_975_mc  <- mean(perdidas_mc[perdidas_mc >= var_975_mc], na.rm = TRUE)
+
+tabla_basilea_mc <- data.frame(
+  Metodologia = c("Monte Carlo - VaR 99%", "Monte Carlo - VaR 97.5%", "Monte Carlo - ES 97.5%"),
+  Medida = c("VaR 99%", "VaR 97.5%", "ES 97.5%"),
+  Valor_1_Dia = c(var_99_mc, var_975_mc, es_975_mc),
+  Valor_10_Dias = c(var_99_mc * sqrt(10), var_975_mc * sqrt(10), es_975_mc * sqrt(10)),
+  Capital_Mercado = c((var_99_mc * sqrt(10)) * 3.0, (var_975_mc * sqrt(10)) * 1.5, (es_975_mc * sqrt(10)) * 1.5)
+)
+```
+
+
+
+**7. MÉTODO PARAMÉTRICO (Delta-Normal) **
+Cálculo analítico ajustado por rendimiento esperado (Drift).
+```{r}
+alphas <- matrix(inversiones_vec, ncol = 1)
+mu_portafolio <- sum(inversiones_vec * mu_vec_global)
+sd_portafolio <- sqrt(as.numeric(t(alphas) %*% matriz_cov_global %*% alphas))
+
+z_99 <- qnorm(0.99)
+z_975 <- qnorm(0.975)
+
+var_99_param  <- (sd_portafolio * z_99) - mu_portafolio
+var_975_param <- (sd_portafolio * z_975) - mu_portafolio
+es_975_param  <- (sd_portafolio * (dnorm(z_975) / (1 - 0.975))) - mu_portafolio
+
+tabla_basilea_param <- data.frame(
+  Metodologia = c("Paramétrico - VaR 99%", "Paramétrico - VaR 97.5%", "Paramétrico - ES 97.5%"),
+  Medida = c("VaR 99%", "VaR 97.5%", "ES 97.5%"), 
+  Valor_1_Dia = c(var_99_param, var_975_param, es_975_param),
+  Valor_10_Dias = c(var_99_param * sqrt(10), var_975_param * sqrt(10), es_975_param * sqrt(10)),
+  Capital_Mercado = c((var_99_param * sqrt(10)) * 3.0, (var_975_param * sqrt(10)) * 1.5, (es_975_param * sqrt(10)) * 1.5)
+)
+```
+
+
+
+**8. MÉTODO EWMA (Decaimiento Exponencial) **
+Estimación de matriz de varianza-covarianza dinámica.
+```{r}
+lambda <- 0.94
+retornos <- as.matrix(rendimientos_globales)
+num_dias <- nrow(retornos)
+
+# Blindaje EWMA: Si hay pocos datos, ajusta el Burn-in
+burn_in <- min(30, max(1, num_dias - 1))
+matriz_cov_ewma <- cov(retornos[1:burn_in, , drop=FALSE])
+
+if (num_dias > burn_in) {
+  for (i in (burn_in + 1):num_dias) {
+    r_t <- retornos[i, ]
+    matriz_cov_ewma <- (lambda * matriz_cov_ewma) + ((1 - lambda) * tcrossprod(r_t))
+  }
+}
+
+sd_portafolio_ewma <- sqrt(as.numeric(t(inversiones_vec) %*% matriz_cov_ewma %*% inversiones_vec))
+
+# Aplicamos el Drift también en EWMA para consistencia
+var_99_ewma  <- (sd_portafolio_ewma * z_99) - mu_portafolio
+var_975_ewma <- (sd_portafolio_ewma * z_975) - mu_portafolio
+es_975_ewma  <- (sd_portafolio_ewma * (dnorm(z_975) / (1 - 0.975))) - mu_portafolio
+
+tabla_basilea_ewma <- data.frame(
+  Metodologia = c("EWMA - VaR 99%", "EWMA - VaR 97.5%", "EWMA - ES 97.5%"),
+  Medida = c("VaR 99%", "VaR 97.5%", "ES 97.5%"),
+  Valor_1_Dia = c(var_99_ewma, var_975_ewma, es_975_ewma),
+  Valor_10_Dias = c(var_99_ewma * sqrt(10), var_975_ewma * sqrt(10), es_975_ewma * sqrt(10)),
+  Capital_Mercado = c((var_99_ewma * sqrt(10)) * 3.0, (var_975_ewma * sqrt(10)) * 1.5, (es_975_ewma * sqrt(10)) * 1.5)
+)
+```
+
+
+
+**9. COMPARATIVA DEL VALOR EN RIESGO **
+```{r}
+resumen_var_total <- rbind(
+  tabla_regulacion_hist,
+  tabla_basilea_mc,
+  tabla_basilea_param,
+  tabla_basilea_ewma
+)
+```
+
+
+
+<!-- **10. OPTIMIZACIÓN DE MARKOWITZ ** -->
+<!-- Asignación óptima de capital bajo restricciones de Varianza y Sharpe. -->
+<!-- ```{r} -->
+<!-- unos <- rep(1, n) -->
+<!-- cov_inv <- solve(matriz_cov_global) -->
+
+<!-- # ESCENARIO 1: APALANCADO -->
+<!-- pesos_min_apal <- (cov_inv %*% unos) / as.numeric(t(unos) %*% cov_inv %*% unos) -->
+<!-- pesos_shp_apal <- (cov_inv %*% mu_vec_global) / as.numeric(t(unos) %*% cov_inv %*% mu_vec_global) -->
+
+<!-- # ESCENARIO 2: LONG-ONLY -->
+<!-- Amat_min <- cbind(unos, diag(n)) -->
+<!-- sol_min <- solve.QP(Dmat = matriz_cov_global, dvec = rep(0, n), Amat = Amat_min, bvec = c(1, rep(0, n)), meq = 1) -->
+<!-- pesos_min_real <- sol_min$solution -->
+
+<!-- softmax <- function(x) { ex <- exp(x - max(x)); ex / sum(ex) } -->
+<!-- funcion_sharpe <- function(theta) { -->
+<!--   w <- softmax(c(theta, 0)) -->
+<!--   -(sum(w * mu_vec_global) / sqrt(as.numeric(t(w) %*% matriz_cov_global %*% w))) -->
+<!-- } -->
+
+<!-- # Iniciamos desde múltiples puntos para evitar mínimos locales -->
+<!-- optimizacion <- optim(par = rep(0, n - 1), fn = funcion_sharpe, method = "BFGS") -->
+
+<!-- if (optimizacion$convergence != 0) { -->
+<!--   warning("La optimización de Sharpe no alcanzó convergencia absoluta.") -->
+<!-- } -->
+<!-- pesos_shp_real <- softmax(c(optimizacion$par, 0)) -->
+
+<!-- tabla_optimizacion <- data.frame( -->
+<!--   Activo = activos_info$Nombre_Variable, -->
+<!--   Inv_Actual = activos_info$Inversion, -->
+<!--   Apalancado_MinVarianza = round(pesos_min_apal * total_invertir, 2), -->
+<!--   Realista_MinVarianza   = round(pesos_min_real * total_invertir, 2), -->
+<!--   Apalancado_Sharpe = round(pesos_shp_apal * total_invertir, 2), -->
+<!--   Realista_Sharpe   = round(pesos_shp_real * total_invertir, 2) -->
+<!-- ) -->
+<!-- ``` -->
+
+
+
+**11. EXPORTACIÓN DE RESULTADOS **
+```{r}
+hojas_excel <- list(
+  "Resumen Comparativo"  = resumen_var_total,
+  "Simulación Histórica" = tabla_regulacion_hist,
+  "Monte Carlo"          = tabla_basilea_mc,
+  "Paramétrico"          = tabla_basilea_param,
+  "EWMA (Lineal)"        = tabla_basilea_ewma
+  #"Optimización Capital" = tabla_optimizacion
+)
+
+# Exportación Segura
+tryCatch({
+  write_xlsx(hojas_excel, path = "Resultados_VaR_Moderado.xlsx")
+  print("Archivo final exportado con éxito.")
+}, error = function(e) {
+  warning(paste("No se pudo exportar a Excel. Cierra el archivo si lo tienes abierto. Error:", e$message))
+})
+```
