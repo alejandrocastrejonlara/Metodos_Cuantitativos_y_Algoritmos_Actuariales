@@ -1,0 +1,119 @@
+---
+title: "Metodo de la composicion"
+author: "Cristian Alejandro Castrejon Lara"
+date: "2026-04-16"
+output: html_document
+---
+
+**Problema 1**
+```{r}
+set.seed(42)
+n_simulaciones<- 10000
+U<- runif(n_simulaciones)
+
+X_simulados<- ifelse(U <= 0.5, log(2 * U), -log(2 * (1 - U)))
+#head(X_simulados)
+
+hist(X_simulados,
+     probability = T,
+     col = "pink",
+     border = "black",
+     main = "Distribución Doble Exponencial",
+     breaks = 30,
+     ylim = c(0, 0.5))
+
+doble_exponencial<- function(x){
+  0.5*exp(-abs(x))
+}
+
+curve(doble_exponencial, add = T, col = "purple", lwd = 3)
+
+```
+**Problema 2**
+```{r}
+set.seed(42)
+n_simulaciones<- 10000
+U<- runif(n_simulaciones)
+
+X_simulados<- ifelse(U<=0.5, sqrt(2*U) + 3, 5 - sqrt(2*(1-U)))
+head(X_simulados,10)
+
+hist(X_simulados,
+     probability = T,
+     col = "pink",
+     border = "black",
+     main = "Distribucion de dos densidades",
+     breaks = 30)
+
+densidad_teorica<- function(x){
+  ifelse(x >= 3 & x<= 4, 0.5 * (2*x-6),
+         ifelse(x > 4 & x <= 5, 0.5 * (-2 * x +10), 0))
+}
+
+curve(densidad_teorica, add = T, col = "purple", lwd = 3)
+```
+
+**Problema 3**
+```{r}
+set.seed(123)
+n_simulaciones <- 10000
+lambda1 <- 1 # rate de la primera distribucion exponencial
+lambda2 <- 2 # rate de la segunda distribucion exponencial
+a1 <- 1/4 # Ponderacion de la primera distribucion
+a2 <- 3/4 # Ponderacion de la segunda distribucion
+
+U1 <- runif(n_simulaciones) # Estos valores son de decision
+U2 <- runif(n_simulaciones) # Estos valores son para evaluar en la funcion inversa de la distribucion de seleccion.
+
+X_simulados <- ifelse(U1 <= a1, qexp(p = U2, rate = lambda1), qexp(p = U2, rate = lambda2))
+
+head(X_simulados)
+
+hist(X_simulados,
+     probability = T,
+     col = "pink",
+     border = "black",
+     main = "Histograma de la suma de dos exponenciales",
+     breaks = 15)
+
+f_teorica<- function(x){
+  a1*exp(-x) + a2 * 2 * exp(-2 * x)
+}
+
+curve(f_teorica, add = T, col = "purple", lwd = 3)
+```
+
+**Problema 4**
+```{r}
+set.seed(123)
+n_simulaciones <- 10000
+alpha1 <- 4 
+alpha2 <- 15 
+theta1 <- 7 
+theta2 <- 7 
+a1 <- 0.5 # Ponderacion de la primera distribucion
+a2 <- 0.5 # Ponderacion de la segunda distribucion
+
+U1 <- runif(n_simulaciones) # Estos valores son de decision
+U2 <- runif(n_simulaciones) # Estos valores son para evaluar en la funcion inversa de la distribucion de seleccion.
+
+X_simulados <- ifelse(U1 <= a1, qgamma(p = U2, shape = alpha1, scale = theta1), qgamma(p = U2, shape = alpha2, scale = theta2))
+
+head(X_simulados)
+
+hist(X_simulados,
+     probability = T,
+     col = "pink",
+     border = "black",
+     main = "Histograma de la suma de dos gammas",
+     breaks = 50)
+
+f_teorica<- function(x){
+  f1_x<- dgamma(x, shape = alpha1, scale = theta1) 
+  f2_x <- dgamma(x, shape = alpha2, scale = theta2)
+  f_x<- a1 * f1_x + a2 * f2_x
+  return(f_x)
+}
+
+curve(f_teorica, add = T, col = "purple", lwd = 3)
+```
