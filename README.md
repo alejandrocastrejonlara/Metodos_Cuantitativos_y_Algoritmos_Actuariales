@@ -23,3 +23,9 @@ Método de la Transformada Inversa (metodo_transformada_inversa.Rmd): Generació
 Método de Composición (metodo_composicion.Rmd): Simulación estocástica de variables aleatorias cuyas densidades pueden expresarse como una mezcla convexa de múltiples distribuciones base. Incluye la simulación de mezclas de distribuciones Exponenciales, Gammas y el modelado de densidades fragmentadas (ej. Distribución Doble Exponencial de Laplace), utilizando variables de decisión condicionadas (ifelse) para bifurcar ponderaciones estocásticas,
 
 Aceptación-Rechazo en Densidades por Partes (aceptacion_rechazo_triangular.Rmd): Aplicación del algoritmo de aceptación-rechazo para simular variables aleatorias a partir de funciones de densidad definidas a trozos (ej. distribuciones triangulares). El código integra evaluaciones lógicas vectorizadas (ifelse) con iteraciones de control (repeat, break) para filtrar los valores generados por la distribución uniforme basándose en la cota superior de la función mayorante.
+
+
+
+Análisis de Valor en Riesgo (VaR) y Optimización de Portafolios: Script en R (`VaR_Optimizacion_Moderado.Rmd`) que extrae datos históricos del mercado mediante API y calcula el VaR y el Expected Shortfall (ES) al 99% y 97.5%. Implementa cuatro enfoques normativos: Simulación Histórica, Simulación Monte Carlo (100,000 escenarios), Modelo Paramétrico Delta-Normal y Volatilidad Dinámica (EWMA). Incluye el modelado matricial para la Optimización de Markowitz (frontera eficiente y ratio de Sharpe).
+
+Modelo Estructural de Riesgo de Crédito (Merton): Herramienta desarrollada en Excel (`Modelo_Estructural_Merton_Rediseno.xlsx`) para estimar la probabilidad de incumplimiento corporativo (PD) aplicando el marco de opciones financieras de Black-Scholes-Merton sobre la estructura de capital de una empresa.
